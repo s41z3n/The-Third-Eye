@@ -1,10 +1,127 @@
-from ultralytics import YOLO
 import cv2
-import pyttsx3
+import time
+import threading
+import numpy as np
+from PIL import Image
+from ultralytics import YOLO
+from transformers import pipeline
 
+# --- 1. UTILITY FUNCTIONS ---
+def getCoords(image):
+    # FIX 1: Use shape[:2] so it works for both Color (3D) and Depth (2D) images
+    h, w = image.shape[:2]
+    
+    target_w_ratio = 0.15
+    target_h_ratio = 0.55
+    
+    box_width = int(w * target_w_ratio)
+    box_height = int(h * target_h_ratio)
+    
+    start_x = (w - box_width) // 2
+    start_y = (h - box_height) // 2
 
-model = YOLO("yolo11n-seg.pt")
+    end_x = start_x + box_width
+    end_y = start_y + box_height
+    
+    return start_x, start_y, end_x, end_y
 
-results = model.predict(source=0,show=True)
+# --- 2. SETUP ---
+print("Loading AI...")
+pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device="mps", use_fast=True)
+model = YOLO("yolo11n.pt")
 
-print(results)
+CHECK_INTERVAL = 0.25
+DEPTH_THRESHOLD = 170
+
+cap = cv2.VideoCapture(0)
+
+# State Variables
+current_frame = None       
+latest_heatmap = None      
+program_running = True     
+current_status = "SAFE"
+box_color = (0, 255, 0) 
+
+# --- 3. THE BRAIN (THREAD) ---
+def depth_thread():
+    # FIX 2: Added 'current_status' and 'box_color' so we can change them globally
+    global current_frame, latest_heatmap, program_running, current_status, box_color
+    
+    while program_running:
+        if current_frame is None:
+            time.sleep(0.1)
+            continue
+        
+        # A. Run AI
+        input_image = current_frame.copy()
+        pil_image = Image.fromarray(cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB))
+        result = pipe(pil_image)
+        depth_data = np.array(result["depth"])
+        
+        # B. Get Coords & Slice (Using the raw depth map size)
+        sx, sy, ex, ey = getCoords(depth_data)
+        danger_zone = depth_data[sy:ey, sx:ex]
+
+        # C. Math
+        close_pixels = np.sum(danger_zone > DEPTH_THRESHOLD)
+        percent_blocked = close_pixels / danger_zone.size
+
+        if percent_blocked > 0.40:
+            current_status = "STOP!"
+            box_color = (0, 0, 255) # Red
+        else:
+            current_status = "SAFE"
+            box_color = (0, 255, 0) # Green
+            
+        # D. Make Heatmap
+        # Resize to match camera for display purposes
+        depth_display = cv2.resize(depth_data, (input_image.shape[1], input_image.shape[0]))
+        latest_heatmap = cv2.applyColorMap(depth_display, cv2.COLORMAP_INFERNO)
+        
+        time.sleep(CHECK_INTERVAL)
+
+thread = threading.Thread(target=depth_thread, daemon=True)
+thread.start()
+
+# --- 4. THE EYES (MAIN LOOP) ---
+print("System Ready.")
+
+while True:
+    ret, frame = cap.read()
+    if not ret: break
+    
+    current_frame = frame
+    results = model.predict(source=frame, verbose=False, conf=0.5)
+    frame = results[0].plot()
+
+    # DRAW ON MAIN FRAME
+    # We calculate coordinates based on the *frame size*
+    sx, sy, ex, ey = getCoords(frame)
+    cv2.rectangle(frame, (sx, sy), (ex, ey), box_color, 2)
+    cv2.putText(frame, current_status, (sx, sy-10), cv2.FONT_HERSHEY_SIMPLEX, 1, box_color, 2)
+    
+    # DRAW ON THERMAL OVERLAY
+    # FIX 3: Moved all 'small_thermal' logic inside the if check
+    if latest_heatmap is not None:
+        
+        h, w, _ = frame.shape
+        
+        scale = 0.35
+        aspect_ratio = 4/3
+        
+        hm_width = int(w * scale)
+        hm_height = int(hm_width / aspect_ratio)
+        
+        small_thermal = cv2.resize(latest_heatmap, (hm_width, hm_height))
+        
+        frame[h-hm_height:h, 0:hm_width] = small_thermal
+        cv2.rectangle(frame, (0, h-hm_height), (hm_width, h), (255, 255, 255), 2)
+        
+    cv2.imshow("The Third Eye", frame)
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        program_running = False
+        break
+
+cap.release()
+cv2.destroyAllWindows()
