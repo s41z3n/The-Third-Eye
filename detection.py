@@ -5,6 +5,9 @@ import numpy as np
 from PIL import Image
 from ultralytics import YOLO
 from transformers import pipeline
+import pyttsx3
+engine = pyttsx3.init()
+previous_status = "SAFE"
 
 # --- 1. UTILITY FUNCTIONS ---
 def getCoords(image):
@@ -27,7 +30,7 @@ def getCoords(image):
 
 # --- 2. SETUP ---
 print("Loading AI...")
-pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device="mps", use_fast=True)
+pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device="cpu", use_fast=True)
 model = YOLO("yolo11n.pt")
 
 CHECK_INTERVAL = 0.25
@@ -41,7 +44,7 @@ latest_heatmap = None
 program_running = True     
 current_status = "SAFE"
 box_color = (0, 255, 0) 
-
+previous_status = "SAFE"
 # --- 3. THE BRAIN (THREAD) ---
 def depth_thread():
     # FIX 2: Added 'current_status' and 'box_color' so we can change them globally
@@ -69,10 +72,11 @@ def depth_thread():
         if percent_blocked > 0.40:
             current_status = "STOP!"
             box_color = (0, 0, 255) # Red
+        
         else:
             current_status = "SAFE"
             box_color = (0, 255, 0) # Green
-            
+        
         # D. Make Heatmap
         # Resize to match camera for display purposes
         depth_display = cv2.resize(depth_data, (input_image.shape[1], input_image.shape[0]))
@@ -85,43 +89,49 @@ thread.start()
 
 # --- 4. THE EYES (MAIN LOOP) ---
 print("System Ready.")
-
-while True:
-    ret, frame = cap.read()
-    if not ret: break
+if __name__ == "__main__":
+    print("System Ready.")
     
-    current_frame = frame
-    results = model.predict(source=frame, verbose=False, conf=0.5)
-    frame = results[0].plot()
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        
+        current_frame = frame
+        if current_status == "STOP!" and previous_status == "SAFE":
+            print("Speaking: caution")
+            engine.say("caution")
+            engine.runAndWait()
 
-    # DRAW ON MAIN FRAME
-    # We calculate coordinates based on the *frame size*
-    sx, sy, ex, ey = getCoords(frame)
-    cv2.rectangle(frame, (sx, sy), (ex, ey), box_color, 2)
-    cv2.putText(frame, current_status, (sx, sy-10), cv2.FONT_HERSHEY_SIMPLEX, 1, box_color, 2)
-    
-    # DRAW ON THERMAL OVERLAY
-    # FIX 3: Moved all 'small_thermal' logic inside the if check
-    if latest_heatmap is not None:
-        
-        h, w, _ = frame.shape
-        
-        scale = 0.35
-        aspect_ratio = 4/3
-        
-        hm_width = int(w * scale)
-        hm_height = int(hm_width / aspect_ratio)
-        
-        small_thermal = cv2.resize(latest_heatmap, (hm_width, hm_height))
-        
-        frame[h-hm_height:h, 0:hm_width] = small_thermal
-        cv2.rectangle(frame, (0, h-hm_height), (hm_width, h), (255, 255, 255), 2)
-        
-    cv2.imshow("The Third Eye", frame)
-    
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        program_running = False
-        break
+        previous_status = current_status
+        results = model.predict(source=frame, verbose=False, conf=0.5)
+        frame = results[0].plot()
 
-cap.release()
-cv2.destroyAllWindows()
+        # DRAW ON MAIN FRAME
+        # We calculate coordinates based on the *frame size*
+        sx, sy, ex, ey = getCoords(frame)
+        cv2.rectangle(frame, (sx, sy), (ex, ey), box_color, 2)
+        cv2.putText(frame, current_status, (sx, sy-10), cv2.FONT_HERSHEY_SIMPLEX, 1, box_color, 2)
+        
+        # DRAW ON THERMAL OVERLAY
+        # FIX 3: Moved all 'small_thermal' logic inside the if check
+        if latest_heatmap is not None:
+            
+            h, w, _ = frame.shape
+            
+            scale = 0.35
+            aspect_ratio = 4/3
+            
+            hm_width = int(w * scale)
+            hm_height = int(hm_width / aspect_ratio)
+            
+            small_thermal = cv2.resize(latest_heatmap, (hm_width, hm_height))
+            
+            frame[h-hm_height:h, 0:hm_width] = small_thermal
+            cv2.rectangle(frame, (0, h-hm_height), (hm_width, h), (255, 255, 255), 2)
+            
+        cv2.imshow("The Third Eye", frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            program_running = False
+            break
+

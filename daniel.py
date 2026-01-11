@@ -5,14 +5,24 @@ import time
 import detection
 
 engine = pyttsx3.init()
-
+previous_status = "SAFE"
 while True:
-    speak = detection.text()
+    current_status = detection.current_status
     
-    if speak:  # Only speak if objects detected
-        print(speak)
+    if current_status == "STOP!" and previous_status == "SAFE":
+        print("Obstacle detected - Speaking warning")
         engine.say("caution")
         engine.runAndWait()
+    
+   
+    previous_status = current_status
+    
+    # Small delay to avoid overwhelming the system
+    time.sleep(0.1)
+    
+    # Check if main program stopped
+    if not detection.program_running:
+        break
             
     
     
