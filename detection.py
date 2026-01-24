@@ -11,7 +11,6 @@ previous_status = "SAFE"
 
 # --- 1. UTILITY FUNCTIONS ---
 def getCoords(image):
-    # FIX 1: Use shape[:2] so it works for both Color (3D) and Depth (2D) images
     h, w = image.shape[:2]
     
     target_w_ratio = 0.15
@@ -29,7 +28,6 @@ def getCoords(image):
     return start_x, start_y, end_x, end_y
 
 # --- 2. SETUP ---
-print("Loading AI...")
 pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf", device="cpu", use_fast=True)
 model = YOLO("yolo11n.pt")
 
@@ -45,9 +43,9 @@ program_running = True
 current_status = "SAFE"
 box_color = (0, 255, 0) 
 previous_status = "SAFE"
+
 # --- 3. THE BRAIN (THREAD) ---
 def depth_thread():
-    # FIX 2: Added 'current_status' and 'box_color' so we can change them globally
     global current_frame, latest_heatmap, program_running, current_status, box_color
     
     while program_running:
@@ -55,30 +53,25 @@ def depth_thread():
             time.sleep(0.1)
             continue
         
-        # A. Run AI
         input_image = current_frame.copy()
         pil_image = Image.fromarray(cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB))
         result = pipe(pil_image)
         depth_data = np.array(result["depth"])
         
-        # B. Get Coords & Slice (Using the raw depth map size)
         sx, sy, ex, ey = getCoords(depth_data)
         danger_zone = depth_data[sy:ey, sx:ex]
 
-        # C. Math
         close_pixels = np.sum(danger_zone > DEPTH_THRESHOLD)
         percent_blocked = close_pixels / danger_zone.size
 
         if percent_blocked > 0.40:
             current_status = "STOP!"
-            box_color = (0, 0, 255) # Red
+            box_color = (0, 0, 255)
         
         else:
             current_status = "SAFE"
-            box_color = (0, 255, 0) # Green
+            box_color = (0, 255, 0)
         
-        # D. Make Heatmap
-        # Resize to match camera for display purposes
         depth_display = cv2.resize(depth_data, (input_image.shape[1], input_image.shape[0]))
         latest_heatmap = cv2.applyColorMap(depth_display, cv2.COLORMAP_INFERNO)
         
@@ -107,13 +100,11 @@ if __name__ == "__main__":
         frame = results[0].plot()
 
         # DRAW ON MAIN FRAME
-        # We calculate coordinates based on the *frame size*
         sx, sy, ex, ey = getCoords(frame)
         cv2.rectangle(frame, (sx, sy), (ex, ey), box_color, 2)
         cv2.putText(frame, current_status, (sx, sy-10), cv2.FONT_HERSHEY_SIMPLEX, 1, box_color, 2)
         
         # DRAW ON THERMAL OVERLAY
-        # FIX 3: Moved all 'small_thermal' logic inside the if check
         if latest_heatmap is not None:
             
             h, w, _ = frame.shape
